@@ -1,24 +1,13 @@
 """
 DESI Mock Emission Line Profile Generation Script
 
-This script generates comprehensive mock spectroscopic datasets for training machine learning
-models to classify DESI galaxies. It creates three types of emission line profiles for both
-H-alpha and H-beta lines:
-
-1. Narrow-only profiles: Clean emission lines from input templates
-2. Broad + narrow profiles: AGN-like spectra with broad components
-3. Broad + absorption + narrow profile
+Generates mock spectroscopic datasets for training ML models on DESI galaxy classification.
+Creates emission line profiles: broad+narrow, and broad+absorption+narrow.
 """
-
-# ============================================================================
-# Dependencies and Configuration
-# ============================================================================
-
 from astropy.io import fits
 import os
 import numpy as np
-
-# Matplotlib configuration (for potential plotting/analysis)
+ 
 import matplotlib.pyplot as plt
 plt.rcParams["font.family"] = "STIXGeneral"
 plt.rcParams['mathtext.fontset'] = 'stix'
@@ -31,61 +20,78 @@ plt.rcParams["ytick.right"] = True
 plt.rcParams["ytick.left"] = True
 plt.rcParams['font.size'] = 15
 
-# Suppress warnings for cleaner batch processing output
+ 
 import warnings
 warnings.filterwarnings('ignore')
 
-# ============================================================================
-# Main Generation Logic
-# ============================================================================
-
 from LRDFinder.mock import MockProfileGenerator
-import numpy as np
 
-# Define data directory for input templates and output files
+# Set data directory paths
 mock_data_dir = '/home/lxj/Project/DESI_LRD_ML/data_mock'
 
-# Initialize mock profile generator with narrow emission line templates
-# These template spectra serve as the "narrow" component for all generated profiles
+# Create generator with H-alpha and H-beta narrow line templates
+# These templates provide the base narrow emission lines for all mock profiles
 generator = MockProfileGenerator(
     halpha_file=os.path.join(mock_data_dir, 'narrow_spectra_Ha.fits'),
     hbeta_file=os.path.join(mock_data_dir, 'narrow_spectra_Hb.fits')
 )
 
 # ============================================================================
-# Generate H-alpha Mock Profiles (100k spectra total)
+# Generate H-alpha mock profiles  
 # ============================================================================
 
 print("🚀 Generating H-alpha mock emission line profiles...")
+
+# Generate both broad+narrow and broad+absorption+narrow profiles for H-alpha
 Ha_results = generator.generate_all_profiles_batch(
-    n_spectra=10000,                    # Total spectra for H-alpha
-    line='Ha',                          # H-alpha emission line (6564.614 Å)
-    broad_to_narrow_ratio_range=(2, 10), # Broad component strength relative to narrow
-    abs_ew_range=(2, 10),               # Absorption equivalent width range (Å)
-    output_dir=mock_data_dir,           # Save FITS files to this directory
-    save_broad=True,                    # Generate broad+narrow composite profiles
-    save_absorption=True,               # Generate full profiles with absorption
-    random_seed=2024,                   # Ensures reproducible results
-    use_multiprocessing=True,           # Enable parallel processing for speed
-    n_processes=128                     # Max CPU cores (adjust for your system)
+    n_spectra=10000,                     
+    line='Ha',                           
+    broad_to_narrow_ratio_range=(3, 10), # Broad component 4-15x stronger than narrow (integrated flux within +-1000 km/s)
+    abs_ew_range=(2, 10),               # Absorption equivalent width 2-10 Å
+    output_dir=mock_data_dir,           # Save outputs to data directory
+    save_broad='mock_Ha_broad_only.fits',    # Filename for broad+narrow profiles
+    save_absorption='mock_Ha_broad_absorption.fits',    # Filename for profiles with absorption
+    random_seed=2024,                   # Fixed seed for reproducible results
+    use_multiprocessing=True,           # Use parallel processing
+    n_processes=128                     # Use all available CPU cores
 )
 
 # ============================================================================
-# Generate H-beta Mock Profiles (100k spectra total)
+# Generate H-beta mock profiles
 # ============================================================================
 
 print("🚀 Generating H-beta mock emission line profiles...")
+
+# Generate both broad+narrow and broad+absorption+narrow profiles for H-beta
 Hb_results = generator.generate_all_profiles_batch(
-    n_spectra=10000,                    # Total spectra for H-beta
-    line='Hb',                          # H-beta emission line (4862.683 Å)
-    broad_to_narrow_ratio_range=(2, 10), # Broad component strength relative to narrow
-    abs_ew_range=(2, 10),               # Absorption equivalent width range (Å)
-    output_dir=mock_data_dir,           # Save FITS files to this directory
-    save_broad=True,                    # Generate broad+narrow composite profiles
-    save_absorption=True,               # Generate full profiles with absorption
-    random_seed=2024,                   # Same seed for consistent results
-    use_multiprocessing=True,           # Enable parallel processing
-    n_processes=128                     # Max CPU cores (adjust for your system)
+    n_spectra=10000,                    
+    line='Hb',                           
+    broad_to_narrow_ratio_range=(3, 10), 
+    abs_ew_range=(2, 10),               
+    output_dir=mock_data_dir,           
+    save_broad='mock_Hb_broad_only.fits',    
+    save_absorption='mock_Hb_broad_absorption.fits',    
+    random_seed=2024,                   
+    use_multiprocessing=True,           
+    n_processes=128                     
+)
+# ============================================================================
+# Generate additional H-alpha + strong NII profiles with only broad components
+# ============================================================================
+
+generator = MockProfileGenerator(
+    halpha_file=os.path.join(mock_data_dir, 'narrow_spectra_Ha.fits'),
+    hbeta_file=None  # Skip H-beta to save memory
 )
 
- 
+Ha_narrow_results = generator.generate_all_profiles_batch(
+    n_spectra=10000,                    
+    line='Ha',                           
+    broad=True, broad_abs=False,       # Disable broad+absorption mock
+    broad_to_narrow_ratio_range=(3, 10),
+    output_dir=mock_data_dir,           
+    save_broad='mock_Ha_strongNII_broad_only.fits',     
+    random_seed=2024,                   
+    use_multiprocessing=True,           
+    n_processes=128                     
+)

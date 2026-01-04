@@ -28,7 +28,7 @@ DEFAULT_VEL_RANGE = 2000  # km/s
 DEFAULT_CACHE_SIZE = 1000
 DEFAULT_NORM_RANGE = 100  # km/s
 DEFAULT_BROAD_RATIO_RANGE = (2, 10)
-DEFAULT_BROAD_FWHM_RANGE = (1000, 1250)  # km/s
+DEFAULT_BROAD_FWHM_RANGE = (900, 1500)  # km/s
 DEFAULT_ABS_EW_RANGE = (2, 10)  # Angstrom
 DEFAULT_ABS_VEL_RANGE = (-300, 100)  # km/s
 DEFAULT_ABS_FWHM_RANGE = (80, 250)  # km/s
@@ -437,7 +437,7 @@ class MockProfileGenerator:
             for i, chunk in enumerate(data_chunks):
                 # Use different random seed for each chunk to ensure reproducibility
                 chunk_seed = 42 + i
-                future = executor.submit(_generate_broad_plus_narrow_chunk_worker_ultra_fast, chunk, rest_wave,
+                future = executor.submit(_generate_broad_plus_narrow_chunk_worker, chunk, rest_wave,
                                        broad_to_narrow_ratio_range, broad_fwhm_range, chunk_seed)
                 future_to_index[future] = i
 
@@ -515,12 +515,17 @@ class MockProfileGenerator:
         all_ivars = []
 
         for line_wave, norm_flux, norm_flux_err, z in zip(line_waves, norm_fluxes, norm_flux_errs, zs):
+            # Calculate normalized narrow component integrated flux
+            norm_range_flag = np.abs((line_wave / (1 + z) - rest_wave) / rest_wave * 299792.458) < DEFAULT_NORM_RANGE
+            norm_narrow_val = np.trapz(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
+                                       line_wave[norm_range_flag & ~np.isnan(norm_flux)])
+
             # Generate random broad component parameters
             broad_to_narrow_ratio = np.random.uniform(*broad_to_narrow_ratio_range)
             broad_fwhm = np.random.uniform(*broad_fwhm_range)
 
             # Generate broad component
-            broad_gaussian = self._generate_broad_component(line_wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm)
+            broad_gaussian = self._generate_broad_component(line_wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm, norm_narrow_val)
 
             # Combine components
             composite = norm_flux + broad_gaussian
@@ -602,17 +607,20 @@ class MockProfileGenerator:
         # Create multi-spectrum HDUList
         return self._create_multi_spectrum_hdul(all_params, all_fluxes, all_ivars, 'broad_plus_narrow', line, processed_indices)
 
-    def generate_all_profiles_batch(self, n_spectra: int, line: str = 'Ha', vel_range: float = DEFAULT_VEL_RANGE,
+    def generate_all_profiles_batch(self, n_spectra: int, line: str = 'Ha', 
+                                  broad: bool = True, broad_abs: bool = True,
+                                  vel_range: float = DEFAULT_VEL_RANGE,
                                   broad_to_narrow_ratio_range: Tuple[float, float] = DEFAULT_BROAD_RATIO_RANGE,
                                   broad_fwhm_range: Tuple[float, float] = DEFAULT_BROAD_FWHM_RANGE,
                                   abs_ew_range: Tuple[float, float] = DEFAULT_ABS_EW_RANGE,
                                   abs_vel_range: Tuple[float, float] = DEFAULT_ABS_VEL_RANGE,
                                   abs_fwhm_range: Tuple[float, float] = DEFAULT_ABS_FWHM_RANGE,
-                                  output_dir: Optional[str] = None, save_broad: bool = True, save_absorption: bool = True,
+                                  output_dir: Optional[str] = None,
+                                  save_broad: Union[bool, str] = True, save_absorption: Union[bool, str] = True,
                                   random_seed: Optional[int] = None, use_multiprocessing: bool = True,
                                   n_processes: Optional[int] = None) -> Dict[str, Union[fits.HDUList, Dict]]:
         """
-        Generate batches of all three profile types simultaneously with randomly selected spectra.
+        Generate batches of selected profile types with randomly selected spectra.
 
         Parameters:
         -----------
@@ -634,10 +642,16 @@ class MockProfileGenerator:
             Range for random absorption FWHM
         output_dir : str or None
             Directory to save FITS files (if None, files are not saved)
-        save_broad : bool
-            Whether to save broad+narrow profiles to FITS
-        save_absorption : bool
-            Whether to save broad+absorption+narrow profiles to FITS
+        broad : bool
+            Whether to generate broad+narrow profiles
+        broad_abs : bool
+            Whether to generate broad+absorption+narrow profiles
+        save_broad : bool or str
+            Whether to save broad+narrow profiles to FITS. If True, uses default filename with parameters.
+            If str, uses the string as the filename.
+        save_absorption : bool or str
+            Whether to save broad+absorption+narrow profiles to FITS. If True, uses default filename with parameters.
+            If str, uses the string as the filename.
         random_seed : int or None
             Random seed for reproducible results
         use_multiprocessing : bool
@@ -648,9 +662,9 @@ class MockProfileGenerator:
         Returns:
         --------
         results : dict
-            Dictionary containing all generated profiles:
-            - 'broad': HDUList object containing multiple broad+narrow profiles
-            - 'absorption': HDUList object containing multiple broad+absorption+narrow profiles
+            Dictionary containing requested generated profiles:
+            - 'broad': HDUList object containing multiple broad+narrow profiles (if broad=True)
+            - 'absorption': HDUList object containing multiple broad+absorption+narrow profiles (if broad_abs=True)
             Each HDUList has the same format as input FITS files with 2D arrays
             - 'metadata': dict with generation parameters and file paths
         """
@@ -670,53 +684,64 @@ class MockProfileGenerator:
         indices = np.random.choice(max_index + 1, size=n_spectra, replace=replace)
         indices = np.sort(indices)  # Sort for consistent ordering (may contain duplicates if replacement used)
 
+        # Initialize variables
+        waves_broad = None
+        abs_hduls = None
 
-        # Generate broad + narrow profiles (now uses parallel processing for both data processing and mock generation)
-        print(f"Generating {n_spectra} broad+narrow profiles...")
-        waves_broad = self.generate_broad_plus_narrow_batch(
-            indices, line, vel_range, broad_to_narrow_ratio_range, broad_fwhm_range, use_multiprocessing, n_processes)
+        # Generate broad + narrow profiles if requested
+        if broad:
+            print(f"Generating {n_spectra} broad+narrow profiles...")
+            waves_broad = self.generate_broad_plus_narrow_batch(
+                indices, line, vel_range, broad_to_narrow_ratio_range, broad_fwhm_range, use_multiprocessing, n_processes)
 
-        # Generate broad + absorption + narrow profiles
-        print(f"Generating {n_spectra} broad+absorption+narrow profiles...")
+        # Generate broad + absorption + narrow profiles if requested
+        if broad_abs:
+            print(f"Generating {n_spectra} broad+absorption+narrow profiles...")
 
-        # Process absorption profiles individually for unique random parameters
-        all_abs_wav_mins = []
-        all_abs_dwaves = []
-        all_abs_npixels = []
-        all_abs_fluxes = []
-        all_abs_errs = []
+            # Process absorption profiles individually for unique random parameters
+            all_abs_wav_mins = []
+            all_abs_dwaves = []
+            all_abs_npixels = []
+            all_abs_fluxes = []
+            all_abs_errs = []
 
-        # Ensure spectra are loaded for parameter extraction
-        self._ensure_loaded(line)
-        narrow_spec = self.narrow_spec_ha if line == 'Ha' else self.narrow_spec_hb
-        if narrow_spec is None:
-            raise ValueError(f"No {line} spectra data loaded. Please provide the corresponding FITS file.")
+            # Ensure spectra are loaded for parameter extraction
+            self._ensure_loaded(line)
+            narrow_spec = self.narrow_spec_ha if line == 'Ha' else self.narrow_spec_hb
+            if narrow_spec is None:
+                raise ValueError(f"No {line} spectra data loaded. Please provide the corresponding FITS file.")
 
-        for idx in indices:
-            # Generate absorption profile (returns arrays)
-            wav_min, dwave, npixels, flux, err = self.generate_broad_with_absorption_plus_narrow(
-                idx, line, vel_range, broad_to_narrow_ratio_range, broad_fwhm_range,
-                abs_ew_range, abs_vel_range, abs_fwhm_range)
+            for idx in indices:
+                # Generate absorption profile (returns arrays)
+                wav_min, dwave, npixels, flux, err = self.generate_broad_with_absorption_plus_narrow(
+                    idx, line, vel_range, broad_to_narrow_ratio_range, broad_fwhm_range,
+                    abs_ew_range, abs_vel_range, abs_fwhm_range)
 
-            all_abs_wav_mins.append(wav_min)
-            all_abs_dwaves.append(dwave)
-            all_abs_npixels.append(npixels)
-            all_abs_fluxes.append(flux)
-            all_abs_errs.append(err)
+                all_abs_wav_mins.append(wav_min)
+                all_abs_dwaves.append(dwave)
+                all_abs_npixels.append(npixels)
+                all_abs_fluxes.append(flux)
+                all_abs_errs.append(err)
 
-        # Create parameters from the collected data (vectorized extraction - much faster)
-        # Convert to list of numpy records (preserves field access like params['REDSHIFT'])
-        all_abs_params = [row for row in narrow_spec['PARAMETERS'].data[indices]]
+            # Create parameters from the collected data (vectorized extraction - much faster)
+            # Convert to list of numpy records (preserves field access like params['REDSHIFT'])
+            all_abs_params = [row for row in narrow_spec['PARAMETERS'].data[indices]]
 
-        # Convert errors to inverse variance
-        all_abs_ivars = []
-        for err in all_abs_errs:
-            ivar = np.where(err > 0, 1.0 / (err ** 2), 0.0)
-            all_abs_ivars.append(ivar)
+            # Convert errors to inverse variance
+            all_abs_ivars = []
+            for err in all_abs_errs:
+                ivar = np.where(err > 0, 1.0 / (err ** 2), 0.0)
+                all_abs_ivars.append(ivar)
 
-        # Create multi-spectrum HDUList for absorption profiles
-        abs_hduls = self._create_multi_spectrum_hdul(all_abs_params, all_abs_fluxes, all_abs_ivars,
-                                                    'broad_with_absorption_plus_narrow', line, indices.tolist())
+            # Create multi-spectrum HDUList for absorption profiles
+            abs_hduls = self._create_multi_spectrum_hdul(all_abs_params, all_abs_fluxes, all_abs_ivars,
+                                                        'broad_with_absorption_plus_narrow', line, indices.tolist())
+        else:
+            # Ensure spectra are loaded for parameter extraction (needed for metadata even if not generating absorption)
+            self._ensure_loaded(line)
+            narrow_spec = self.narrow_spec_ha if line == 'Ha' else self.narrow_spec_hb
+            if narrow_spec is None:
+                raise ValueError(f"No {line} spectra data loaded. Please provide the corresponding FITS file.")
 
         # Save to FITS format if requested
         saved_files = {}
@@ -724,41 +749,59 @@ class MockProfileGenerator:
             os.makedirs(output_dir, exist_ok=True)
 
             # Save broad + narrow profiles
-            if save_broad and hasattr(waves_broad, 'writeto'):
-                seed_str = str(random_seed) if random_seed is not None else "none"
-                broad_file = os.path.join(output_dir, f'broad_narrow_{line}_random_{n_spectra}_seed_{seed_str}.fits')
+            if broad and save_broad and hasattr(waves_broad, 'writeto'):
+                if save_broad is True:
+                    # Use default filename with parameters
+                    seed_str = str(random_seed) if random_seed is not None else "none"
+                    broad_ratio_str = f"{broad_to_narrow_ratio_range[0]}-{broad_to_narrow_ratio_range[1]}"
+                    broad_fwhm_str = f"{broad_fwhm_range[0]}-{broad_fwhm_range[1]}"
+                    broad_file = os.path.join(output_dir, f'broad_narrow_{line}_n{n_spectra}_ratio{broad_ratio_str}_fwhm{broad_fwhm_str}_seed{seed_str}.fits')
+                else:
+                    # Use provided filename
+                    broad_file = os.path.join(output_dir, save_broad)
                 waves_broad.writeto(broad_file, overwrite=True)
                 saved_files['broad'] = broad_file
                 print(f"Saved broad+narrow profiles to: {broad_file}")
 
             # Save broad + absorption + narrow profiles
-            if save_absorption and hasattr(abs_hduls, 'writeto'):
-                seed_str = str(random_seed) if random_seed is not None else "none"
-                abs_file = os.path.join(output_dir, f'broad_absorption_narrow_{line}_random_{n_spectra}_seed_{seed_str}.fits')
+            if broad_abs and save_absorption and hasattr(abs_hduls, 'writeto'):
+                if save_absorption is True:
+                    # Use default filename with parameters
+                    seed_str = str(random_seed) if random_seed is not None else "none"
+                    broad_ratio_str = f"{broad_to_narrow_ratio_range[0]}-{broad_to_narrow_ratio_range[1]}"
+                    broad_fwhm_str = f"{broad_fwhm_range[0]}-{broad_fwhm_range[1]}"
+                    abs_ew_str = f"{abs_ew_range[0]}-{abs_ew_range[1]}"
+                    abs_vel_str = f"{abs_vel_range[0]}-{abs_vel_range[1]}"
+                    abs_fwhm_str = f"{abs_fwhm_range[0]}-{abs_fwhm_range[1]}"
+                    abs_file = os.path.join(output_dir, f'broad_absorption_narrow_{line}_n{n_spectra}_ratio{broad_ratio_str}_fwhm{broad_fwhm_str}_ew{abs_ew_str}_vel{abs_vel_str}_fwhm{abs_fwhm_str}_seed{seed_str}.fits')
+                else:
+                    # Use provided filename
+                    abs_file = os.path.join(output_dir, save_absorption)
                 abs_hduls.writeto(abs_file, overwrite=True)
                 saved_files['absorption'] = abs_file
                 print(f"Saved broad+absorption+narrow profiles to: {abs_file}")
 
         # Prepare results dictionary
-        results = {
-            'broad': waves_broad,          # Single HDUList with multiple spectra
-            'absorption': abs_hduls,       # Single HDUList with multiple spectra
-            'metadata': {
+        results = {}
+        if broad:
+            results['broad'] = waves_broad          # Single HDUList with multiple spectra
+        if broad_abs:
+            results['absorption'] = abs_hduls       # Single HDUList with multiple spectra
+        results['metadata'] = {
             'selected_indices': indices.tolist(),
             'n_spectra_requested': n_spectra,
             'n_spectra_available': available_info['n_spectra'],
             'used_replacement': replace,
             'line': line,
-                'vel_range': vel_range,
-                'broad_to_narrow_ratio_range': broad_to_narrow_ratio_range,
-                'broad_fwhm_range': broad_fwhm_range,
-                'abs_ew_range': abs_ew_range,
-                'abs_vel_range': abs_vel_range,
-                'abs_fwhm_range': abs_fwhm_range,
-                'random_seed': random_seed,
-                'available_spectra': available_info['n_spectra'],
-                'saved_files': saved_files
-            }
+            'vel_range': vel_range,
+            'broad_to_narrow_ratio_range': broad_to_narrow_ratio_range,
+            'broad_fwhm_range': broad_fwhm_range,
+            'abs_ew_range': abs_ew_range,
+            'abs_vel_range': abs_vel_range,
+            'abs_fwhm_range': abs_fwhm_range,
+            'random_seed': random_seed,
+            'available_spectra': available_info['n_spectra'],
+            'saved_files': saved_files
         }
 
         print(f"Successfully generated {n_spectra} broad and absorption profiles")
@@ -963,7 +1006,7 @@ class MockProfileGenerator:
 
         return line_waves, line_fluxes, line_flux_errs, vel_to_lines
 
-    def _normalize_spectra_batch(self, fluxes, errs, vel_to_lines, norm_range=100):
+    def _normalize_spectra_batch(self, fluxes, errs, vel_to_lines, norm_range=200):
         """
         Vectorized version of _normalize_spectra for multiple spectra.
 
@@ -997,7 +1040,7 @@ class MockProfileGenerator:
 
         return norm_fluxes, norm_flux_errs, np.array(peak_fluxes)
 
-    def _normalize_spectra(self, flux, err, vel_to_line, norm_range=100):
+    def _normalize_spectra(self, flux, err, vel_to_line, norm_range=200):
         """
         Normalize spectra by peak flux in central region.
 
@@ -1117,7 +1160,7 @@ class MockProfileGenerator:
         with ProcessPoolExecutor(max_workers=n_processes) as executor:
             future_to_index = {}
             for i, chunk in enumerate(data_chunks):
-                future = executor.submit(_process_spectra_chunk_worker_ultra_fast, chunk, rest_wave, vel_range)
+                future = executor.submit(_process_spectra_chunk_worker, chunk, rest_wave, vel_range)
                 future_to_index[future] = i
 
             # Collect results with progress tracking
@@ -1176,7 +1219,7 @@ class MockProfileGenerator:
     
 
 
-    def _generate_broad_component(self, wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm):
+    def _generate_broad_component(self, wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm, norm_narrow_val=1.0):
         """
         Generate broad emission component.
 
@@ -1192,6 +1235,8 @@ class MockProfileGenerator:
             Ratio of broad to narrow component flux
         broad_fwhm : float
             FWHM of broad component in km/s
+        norm_narrow_val : float
+            Normalized integrated flux of narrow component (default: 1.0)
 
         Returns:
         --------
@@ -1199,8 +1244,7 @@ class MockProfileGenerator:
             Broad component flux
         """
         c = 299792.458  # speed of light in km/s
-        norm_flux_val = 1.0  # normalized narrow component peak
-        norm_broad_val = norm_flux_val * broad_to_narrow_ratio
+        norm_broad_val = norm_narrow_val * broad_to_narrow_ratio
 
         # Compute sigma in wavelength space
         broad_sigma_lambda = (broad_fwhm / (2 * np.sqrt(2 * np.log(2)))) / c * rest_wave
@@ -1304,6 +1348,11 @@ class MockProfileGenerator:
         # Normalize
         norm_flux, norm_flux_err, _ = self._normalize_spectra(line_flux, line_flux_err, vel_to_line)
 
+        # Calculate normalized narrow component integrated flux
+        norm_range_flag = np.abs(vel_to_line) < DEFAULT_NORM_RANGE  # normalization range
+        norm_narrow_val = np.trapz(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
+                                   line_wave[norm_range_flag & ~np.isnan(norm_flux)])
+
         rest_wave = self._get_rest_wavelength(line)
 
         # Ensure spectra are loaded and get narrow_spec
@@ -1327,7 +1376,7 @@ class MockProfileGenerator:
         broad_fwhm = np.random.uniform(*broad_fwhm_range)
 
         # Generate broad component using the same wavelength range as narrow component
-        broad_gaussian = self._generate_broad_component(line_wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm)
+        broad_gaussian = self._generate_broad_component(line_wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm, norm_narrow_val)
 
         # Combine components
         composite = norm_flux + broad_gaussian
@@ -1408,6 +1457,11 @@ class MockProfileGenerator:
         # Normalize
         norm_flux, norm_flux_err, _ = self._normalize_spectra(line_flux, line_flux_err, vel_to_line)
 
+        # Calculate normalized narrow component integrated flux
+        norm_range_flag = np.abs(vel_to_line) < DEFAULT_NORM_RANGE  # normalization range
+        norm_narrow_val = np.trapz(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
+                                   line_wave[norm_range_flag & ~np.isnan(norm_flux)])
+
         # Ensure spectra are loaded and get narrow_spec
         self._ensure_loaded(line)
         narrow_spec = self.narrow_spec_ha if line == 'Ha' else self.narrow_spec_hb
@@ -1432,7 +1486,7 @@ class MockProfileGenerator:
         abs_fwhm = np.random.uniform(*abs_fwhm_range)
 
         # Generate components using the same wavelength range as narrow component
-        broad_gaussian = self._generate_broad_component(line_wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm)
+        broad_gaussian = self._generate_broad_component(line_wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm, norm_narrow_val)
         abs_gaussian = self._generate_absorption_component(line_wave, z, rest_wave, abs_ew, abs_vel, abs_fwhm)
 
         # Apply absorption to broad component: broad * (1 - abs)
@@ -1460,39 +1514,10 @@ class MockProfileGenerator:
 
         # Return arrays: wav_min, dwave, npixels, flux, err
         return params['WAV_MIN'], params['DWAVE'], params['N_PIXELS'], norm_composite, norm_composite_err
+ 
+ 
 
-
-
-
-
-
-
-
-
-
-
-def _generate_broad_component_worker(wave: np.ndarray, z: float, rest_wave: float,
-                                    broad_to_narrow_ratio: float, broad_fwhm: float) -> np.ndarray:
-    """
-    Generate broad emission component (worker version for multiprocessing).
-    This is a standalone function that can be called from worker processes.
-    """
-    c = 299792.458  # speed of light in km/s
-    norm_flux_val = 1.0  # normalized narrow component peak
-    norm_broad_val = norm_flux_val * broad_to_narrow_ratio
-
-    # Compute sigma in wavelength space
-    broad_sigma_lambda = (broad_fwhm / (2 * np.sqrt(2 * np.log(2)))) / c * rest_wave
-
-    # Area under Gaussian = amplitude * sigma * sqrt(2*pi)
-    amplitude_lambda = norm_broad_val / (broad_sigma_lambda * np.sqrt(2 * np.pi))
-
-    broad_gaussian = amplitude_lambda * np.exp(-0.5 * ((wave - rest_wave * (1+z)) / broad_sigma_lambda)**2)
-
-    return broad_gaussian
-
-
-def _process_spectra_chunk_worker_ultra_fast(chunk_data: List[Tuple], rest_wave: float, vel_range: float) -> Tuple:
+def _process_spectra_chunk_worker(chunk_data: List[Tuple], rest_wave: float, vel_range: float) -> Tuple:
     """
     Worker function using pre-computed wavelength arrays.
     Optimized for minimal memory allocation and maximum speed.
@@ -1537,7 +1562,7 @@ def _process_spectra_chunk_worker_ultra_fast(chunk_data: List[Tuple], rest_wave:
         vel_mask = vel_to_line[flag]
 
         # Normalize using vectorized operations
-        norm_range_flag = np.abs(vel_mask) < 100  # 100 km/s normalization range
+        norm_range_flag = np.abs(vel_mask) < DEFAULT_NORM_RANGE  # normalization range
         if np.any(norm_range_flag):
             peak_flux = np.nanmax(line_flux[norm_range_flag])
         else:
@@ -1555,7 +1580,7 @@ def _process_spectra_chunk_worker_ultra_fast(chunk_data: List[Tuple], rest_wave:
     return processed_waves, processed_fluxes, processed_errs, processed_zs
 
 
-def _generate_broad_plus_narrow_chunk_worker_ultra_fast(chunk_data: List[Tuple], rest_wave: float,
+def _generate_broad_plus_narrow_chunk_worker(chunk_data: List[Tuple], rest_wave: float,
                                                         broad_to_narrow_ratio_range: Tuple[float, float],
                                                         broad_fwhm_range: Tuple[float, float],
                                                         random_seed: int = 42) -> Tuple:
@@ -1606,20 +1631,21 @@ def _generate_broad_plus_narrow_chunk_worker_ultra_fast(chunk_data: List[Tuple],
         vel_mask = vel_to_line[flag]
 
         # Normalization
-        norm_range_flag = np.abs(vel_mask) < 100
+        norm_range_flag = np.abs(vel_mask) < DEFAULT_NORM_RANGE
         peak_flux = np.nanmax(line_flux[norm_range_flag]) if np.any(norm_range_flag) else np.nanmax(line_flux)
         if peak_flux <= 0 or np.isnan(peak_flux):
             peak_flux = 1.0
 
         norm_flux = line_flux / peak_flux
         norm_flux_err = line_flux_err / peak_flux
+        norm_narrow_val = np.trapz(norm_flux[norm_range_flag & ~np.isnan(norm_flux)], line_wave[norm_range_flag & ~np.isnan(norm_flux)])
 
         # Generate broad component parameters
         broad_to_narrow_ratio = np.random.uniform(*broad_to_narrow_ratio_range)
         broad_fwhm = np.random.uniform(*broad_fwhm_range)
 
         # Generate broad component (inline for speed)
-        norm_broad_val = broad_to_narrow_ratio
+        norm_broad_val = broad_to_narrow_ratio * norm_narrow_val
         broad_sigma_lambda = (broad_fwhm / (2 * np.sqrt(2 * np.log(2)))) / c * rest_wave
         amplitude_lambda = norm_broad_val / (broad_sigma_lambda * np.sqrt(2 * np.pi))
         broad_gaussian = amplitude_lambda * np.exp(-0.5 * ((line_wave - rest_wave * (1+z)) / broad_sigma_lambda)**2)
