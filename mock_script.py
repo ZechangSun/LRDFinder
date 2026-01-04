@@ -46,7 +46,7 @@ print("🚀 Generating H-alpha mock emission line profiles...")
 Ha_results = generator.generate_all_profiles_batch(
     n_spectra=10000,                     
     line='Ha',                           
-    broad_to_narrow_ratio_range=(3, 10), # Broad component 4-15x stronger than narrow (integrated flux within +-1000 km/s)
+    broad_to_narrow_ratio_range=(3, 10), # Broad component 4-15x stronger than narrow (narrow flux integrated within +-100 km/s)
     abs_ew_range=(2, 10),               # Absorption equivalent width 2-10 Å
     output_dir=mock_data_dir,           # Save outputs to data directory
     save_broad='mock_Ha_broad_only.fits',    # Filename for broad+narrow profiles
