@@ -80,8 +80,8 @@ Hb_results = generator.generate_all_profiles_batch(
 # ============================================================================
 
 generator = MockProfileGenerator(
-    halpha_file=os.path.join(mock_data_dir, 'narrow_spectra_Ha.fits'),
-    hbeta_file=None  # Skip H-beta to save memory
+    halpha_file=os.path.join(mock_data_dir, 'narrow_spectra_Ha_strongN.fits'),
+    hbeta_file=None  # Skip H-beta  
 )
 
 Ha_narrow_results = generator.generate_all_profiles_batch(
