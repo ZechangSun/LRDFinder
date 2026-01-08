@@ -210,3 +210,104 @@ class LRDDataset(Dataset):
                     "radec": torch.tensor(radec, dtype=torch.float32)}
 
 
+class PairWiseLRDDataset(LRDDataset):
+    def __init__(self, 
+                pos_fits_files: List[str], 
+                neg_fits_files: List[str], 
+                npixels: int=255,
+                random_mask_ratio: float=0.1,
+                random_shift: Tuple[int]=(-25, 75),
+                noise_std_max: float=0.05,
+                is_train: bool=True):
+        super().__init__(pos_fits_files, neg_fits_files, npixels, random_mask_ratio, random_shift, noise_std_max, is_train)
+        self.pos_indices = np.where(self.labels == 1)[0]
+        self.neg_indices = np.where(self.labels == 0)[0]
+    
+    def __getitem__(self, idx):
+        spec, label, error, radec = self.specs[idx], self.labels[idx], self.errors[idx], self.radecs[idx]
+        target_label = 1 - label
+        if self.is_train:
+            spec = random_shift(spec, self.xl, self.xr)
+            spec = mask_random_pixels(spec, self.k)
+            mask = (spec != 0.) & (error != 0.)
+            spec = spec * mask
+            error = error * mask
+            prefix = 'pos' if label == 1 else 'neg'
+            target_spec = self._sample_target_spec(target_label, self.is_train)
+            target_prefix = 'pos' if target_label == 1 else 'neg'
+
+            output_dict = {f'{prefix}_spec': torch.tensor(spec, dtype=torch.float32), 
+                    f'{prefix}_error': torch.tensor(error, dtype=torch.float32), 
+                    f'{prefix}_label': torch.tensor(label, dtype=torch.float32),
+                    f'{target_prefix}_spec': torch.tensor(target_spec['spec'], dtype=torch.float32),
+                    f'{target_prefix}_error': torch.tensor(target_spec['error'], dtype=torch.float32),
+                    f'{target_prefix}_label': torch.tensor(target_spec['label'], dtype=torch.float32),
+                    }
+            return output_dict
+        else:
+            mask = (spec != 0.) & (error != 0.)
+            spec = spec * mask
+            error = error * mask
+            output_dict = {"spec": torch.tensor(spec, dtype=torch.float32), 
+                    "error": torch.tensor(error, dtype=torch.float32), 
+                    "label": torch.tensor(label, dtype=torch.float32), 
+                    "radec": torch.tensor(radec, dtype=torch.float32)}
+            return output_dict
+    
+    def _sample_target_spec(self, target_label: int=None, apply_augmentation: bool=True):
+        """
+        Sample a target spectral sample for a given index.
+        
+        Args:
+            idx (int): Index of the source sample.
+            
+        Returns:
+            np.ndarray: Target spectral sample with shape matching input spec.
+        """
+            # Determine which indices to sample from
+        if target_label is not None:
+            if target_label == 1:
+                if len(self.pos_indices) == 0:
+                    raise ValueError("No positive samples available in the dataset.")
+                indices = self.pos_indices
+            elif target_label == 0:
+                if len(self.neg_indices) == 0:
+                    raise ValueError("No negative samples available in the dataset.")
+                indices = self.neg_indices
+            else:
+                raise ValueError(f"target_label must be 0, 1, or None, got {target_label}")
+        else:
+            # Sample from all indices
+            indices = np.arange(len(self.labels))
+        
+        # Randomly select an index
+        idx = np.random.choice(indices)
+        
+        # Determine whether to apply augmentation
+        if apply_augmentation is None:
+            use_augmentation = self.is_train
+        else:
+            use_augmentation = apply_augmentation
+        
+        # Get the sample data
+        spec, label, error, radec = self.specs[idx], self.labels[idx], self.errors[idx], self.radecs[idx]
+        
+        # Apply augmentation if requested
+        if use_augmentation:
+            spec = random_shift(spec, self.xl, self.xr)
+            spec = mask_random_pixels(spec, self.k)
+            mask = (spec != 0.) & (error != 0.)
+            spec = spec * mask
+            error = error * mask
+            return {'spec': spec, 
+                    'error': error, 
+                    'label': label}
+        else:
+            mask = (spec != 0.) & (error != 0.)
+            spec = spec * mask
+            error = error * mask
+            return {"spec": torch.tensor(spec, dtype=torch.float32), 
+                    "error": torch.tensor(error, dtype=torch.float32), 
+                    "label": torch.tensor(label, dtype=torch.float32), 
+                    "radec": torch.tensor(radec, dtype=torch.float32)}
+    

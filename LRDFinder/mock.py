@@ -19,6 +19,7 @@ from typing import Optional, List, Dict, Tuple, Union
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
 
+import scipy
 import numpy as np
 from astropy.io import fits
 
@@ -517,7 +518,7 @@ class MockProfileGenerator:
         for line_wave, norm_flux, norm_flux_err, z in zip(line_waves, norm_fluxes, norm_flux_errs, zs):
             # Calculate normalized narrow component integrated flux
             norm_range_flag = np.abs((line_wave / (1 + z) - rest_wave) / rest_wave * 299792.458) < DEFAULT_NORM_RANGE
-            norm_narrow_val = np.trapz(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
+            norm_narrow_val = scipy.integrate.trapezoid(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
                                        line_wave[norm_range_flag & ~np.isnan(norm_flux)])
 
             # Generate random broad component parameters
@@ -1350,7 +1351,7 @@ class MockProfileGenerator:
 
         # Calculate normalized narrow component integrated flux
         norm_range_flag = np.abs(vel_to_line) < DEFAULT_NORM_RANGE  # normalization range
-        norm_narrow_val = np.trapz(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
+        norm_narrow_val = scipy.integrate.trapezoid(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
                                    line_wave[norm_range_flag & ~np.isnan(norm_flux)])
 
         rest_wave = self._get_rest_wavelength(line)
@@ -1459,7 +1460,7 @@ class MockProfileGenerator:
 
         # Calculate normalized narrow component integrated flux
         norm_range_flag = np.abs(vel_to_line) < DEFAULT_NORM_RANGE  # normalization range
-        norm_narrow_val = np.trapz(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
+        norm_narrow_val = scipy.integrate.trapezoid(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
                                    line_wave[norm_range_flag & ~np.isnan(norm_flux)])
 
         # Ensure spectra are loaded and get narrow_spec
@@ -1638,7 +1639,7 @@ def _generate_broad_plus_narrow_chunk_worker(chunk_data: List[Tuple], rest_wave:
 
         norm_flux = line_flux / peak_flux
         norm_flux_err = line_flux_err / peak_flux
-        norm_narrow_val = np.trapz(norm_flux[norm_range_flag & ~np.isnan(norm_flux)], line_wave[norm_range_flag & ~np.isnan(norm_flux)])
+        norm_narrow_val = scipy.integrate.trapezoid(norm_flux[norm_range_flag & ~np.isnan(norm_flux)], line_wave[norm_range_flag & ~np.isnan(norm_flux)])
 
         # Generate broad component parameters
         broad_to_narrow_ratio = np.random.uniform(*broad_to_narrow_ratio_range)

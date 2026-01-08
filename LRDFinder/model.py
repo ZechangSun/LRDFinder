@@ -303,6 +303,25 @@ class OHEMBCEWithLogitsLoss(nn.Module):
             raise ValueError(f"Invalid reduction mode: {self.reduction}")
 
 
+class BPRLoss(nn.Module):
+    def __init__(self, margin: float = 0.1, reduction: str = 'mean'):
+        super().__init__()
+        self.margin = margin
+        self.reduction = reduction
+    
+    def forward(self, pos_scores: torch.Tensor, neg_scores: torch.Tensor) -> torch.Tensor:
+        loss = torch.relu(pos_scores - neg_scores + self.margin)
+
+        if self.reduction == 'none':
+            return loss
+        elif self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            raise ValueError(f"Invalid reduction mode: {self.reduction}")
+
+
 
 class RotaryPositionEMbedding(nn.Module):
     def __init__(self, dim: int, max_seq_len: int = 512, base: int = 10000):
