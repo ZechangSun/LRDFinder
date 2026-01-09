@@ -28,7 +28,7 @@ from astropy.io import fits
 DEFAULT_VEL_RANGE = 2000  # km/s
 DEFAULT_CACHE_SIZE = 1000
 DEFAULT_NORM_RANGE = 100  # km/s
-DEFAULT_BROAD_RATIO_RANGE = (2, 10)
+DEFAULT_BROAD_RATIO_RANGE = (0.2, 3)
 DEFAULT_BROAD_FWHM_RANGE = (900, 1500)  # km/s
 DEFAULT_ABS_EW_RANGE = (2, 10)  # Angstrom
 DEFAULT_ABS_VEL_RANGE = (-300, 100)  # km/s
@@ -517,7 +517,9 @@ class MockProfileGenerator:
 
         for line_wave, norm_flux, norm_flux_err, z in zip(line_waves, norm_fluxes, norm_flux_errs, zs):
             # Calculate normalized narrow component integrated flux
-            norm_range_flag = np.abs((line_wave / (1 + z) - rest_wave) / rest_wave * 299792.458) < DEFAULT_NORM_RANGE
+            c = 299792.458  # speed of light in km/s
+            vel_to_line = (line_wave / (rest_wave * (1 + z)) - 1) * c
+            norm_range_flag = np.abs(vel_to_line) < DEFAULT_NORM_RANGE
             norm_narrow_val = scipy.integrate.trapezoid(norm_flux[norm_range_flag & ~np.isnan(norm_flux)],
                                        line_wave[norm_range_flag & ~np.isnan(norm_flux)])
 
@@ -527,19 +529,31 @@ class MockProfileGenerator:
 
             # Generate broad component
             broad_gaussian = self._generate_broad_component(line_wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm, norm_narrow_val)
+            
+            # Generate error for broad component that matches the narrow component SNR
+            broad_err = broad_to_narrow_ratio * norm_flux_err
+            
+            # Add noise to broad component
+            broad_gaussian += np.random.normal(0, broad_err)
 
             # Combine components
             composite = norm_flux + broad_gaussian
 
+            # Combine errors in quadrature
+            combined_err = np.sqrt(norm_flux_err**2 + broad_err**2)
+
             # Renormalize
-            rest_wave_range = line_wave / (1 + z)
-            norm_range_flag = (rest_wave_range > rest_wave - 2) & (rest_wave_range < rest_wave + 2)
             if np.any(norm_range_flag):
                 renorm = np.nanmax(composite[norm_range_flag])
             else:
                 renorm = np.nanmax(composite)
-            norm_composite = composite / renorm
-            norm_composite_err = norm_flux_err / renorm
+            
+            if renorm > 0:
+                norm_composite = composite / renorm
+                norm_composite_err = combined_err / renorm
+            else:
+                norm_composite = composite
+                norm_composite_err = combined_err
 
             # Convert to inverse variance
             ivar = np.where(norm_composite_err > 0, 1.0 / (norm_composite_err ** 2), 0.0)
@@ -1233,7 +1247,7 @@ class MockProfileGenerator:
         rest_wave : float
             Rest wavelength of emission line
         broad_to_narrow_ratio : float
-            Ratio of broad to narrow component flux
+            Ratio of broad to narrow component peak flux
         broad_fwhm : float
             FWHM of broad component in km/s
         norm_narrow_val : float
@@ -1242,19 +1256,27 @@ class MockProfileGenerator:
         Returns:
         --------
         broad_gaussian : ndarray
-            Broad component flux
+            Broad component flux, normalized by peak height to match broad_to_narrow_ratio
         """
         c = 299792.458  # speed of light in km/s
         norm_broad_val = norm_narrow_val * broad_to_narrow_ratio
-
+        
         # Compute sigma in wavelength space
         broad_sigma_lambda = (broad_fwhm / (2 * np.sqrt(2 * np.log(2)))) / c * rest_wave
-
+        
         # Area under Gaussian = amplitude * sigma * sqrt(2*pi)
         amplitude_lambda = norm_broad_val / (broad_sigma_lambda * np.sqrt(2 * np.pi))
-
+        
         broad_gaussian = amplitude_lambda * np.exp(-0.5 * ((wave - rest_wave * (1+z)) / broad_sigma_lambda)**2)
 
+        # Normalize broad component peak to match the ratio
+        # Ensure broad/narrow is ratio of "peak height" rather than "integrated flux"
+        broad_peak = np.nanmax(broad_gaussian) if broad_gaussian.size else 0.
+        if broad_peak > 0:
+            # Normalize broad component to its peak
+            broad_gaussian /= broad_peak
+            broad_gaussian *= broad_to_narrow_ratio
+        
         return broad_gaussian
 
     def _generate_absorption_component(self, wave, z, rest_wave, abs_ew, abs_vel, abs_fwhm):
@@ -1378,9 +1400,12 @@ class MockProfileGenerator:
 
         # Generate broad component using the same wavelength range as narrow component
         broad_gaussian = self._generate_broad_component(line_wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm, norm_narrow_val)
+        broad_error = norm_flux_err * broad_to_narrow_ratio
+        broad_gaussian += np.random.normal(0, broad_error, size=norm_flux.shape)
 
         # Combine components
         composite = norm_flux + broad_gaussian
+        composite_error = np.sqrt(norm_flux_err**2 + broad_error**2)
 
         # Renormalize
         rest_wave_range = line_wave / (1 + z)
@@ -1391,10 +1416,10 @@ class MockProfileGenerator:
             renorm = np.nanmax(composite)
         if renorm > 0:
             norm_composite = composite / renorm
-            norm_composite_err = norm_flux_err / renorm
+            norm_composite_err = composite_error / renorm
         else:
-            norm_composite = composite
-            norm_composite_err = norm_flux_err
+            norm_composite = np.zeros_like(composite, dtype=composite.dtype)
+            norm_composite_err = np.zeros_like(composite_error, dtype=composite_error.dtype)
 
         # Get original parameters for wavelength information
         params = narrow_spec['PARAMETERS'].data[idx]
@@ -1490,11 +1515,14 @@ class MockProfileGenerator:
         broad_gaussian = self._generate_broad_component(line_wave, z, rest_wave, broad_to_narrow_ratio, broad_fwhm, norm_narrow_val)
         abs_gaussian = self._generate_absorption_component(line_wave, z, rest_wave, abs_ew, abs_vel, abs_fwhm)
 
+        broad_error = norm_flux_err * broad_to_narrow_ratio
         # Apply absorption to broad component: broad * (1 - abs)
         broad_with_abs = broad_gaussian * (1 - abs_gaussian)
+        broad_with_abs += np.random.normal(0, broad_error, size=norm_flux.shape)
 
         # Combine with narrow
         composite = norm_flux + broad_with_abs
+        composite_error = np.sqrt(norm_flux_err**2 + broad_error**2)
 
         # Renormalize
         rest_wave_range = line_wave / (1 + z)
@@ -1507,8 +1535,8 @@ class MockProfileGenerator:
             norm_composite = composite / renorm
             norm_composite_err = norm_flux_err / renorm
         else:
-            norm_composite = composite
-            norm_composite_err = norm_flux_err
+            norm_composite = np.zeros_like(composite, dtype=composite.dtype)
+            norm_composite_err = np.zeros_like(composite_error, dtype=composite_error.dtype)
 
         # Get original parameters for wavelength information
         params = narrow_spec['PARAMETERS'].data[idx]
@@ -1650,19 +1678,37 @@ def _generate_broad_plus_narrow_chunk_worker(chunk_data: List[Tuple], rest_wave:
         broad_sigma_lambda = (broad_fwhm / (2 * np.sqrt(2 * np.log(2)))) / c * rest_wave
         amplitude_lambda = norm_broad_val / (broad_sigma_lambda * np.sqrt(2 * np.pi))
         broad_gaussian = amplitude_lambda * np.exp(-0.5 * ((line_wave - rest_wave * (1+z)) / broad_sigma_lambda)**2)
+        
+        # Normalize broad component peak to match the ratio
+        # Ensure broad/narrow is ratio of "peak height" rather than "integrated flux"
+        broad_peak = np.nanmax(broad_gaussian) if broad_gaussian.size else 0.
+        if broad_peak > 0:
+            # Normalize broad component to its peak
+            broad_gaussian /= broad_peak
+            broad_gaussian *= broad_to_narrow_ratio
+        
+        # Generate error for broad component that matches the narrow component SNR
+        broad_err = broad_to_narrow_ratio * norm_flux_err
+        
+        # Add noise to broad component
+        broad_gaussian += np.random.normal(0, broad_err)
 
-        # Combine and renormalize
+        # Combine components
         composite = norm_flux + broad_gaussian
-        rest_wave_range = line_wave / (1 + z)
-        renorm_range = (rest_wave_range > rest_wave - 2) & (rest_wave_range < rest_wave + 2)
+        
+        # Combine errors in quadrature
+        combined_err = np.sqrt(norm_flux_err**2 + broad_err**2)
 
+        # Renormalize
+        renorm_range = np.abs(vel_mask) < DEFAULT_NORM_RANGE
         renorm = np.nanmax(composite[renorm_range]) if np.any(renorm_range) else np.nanmax(composite)
+        
         if renorm > 0:
             norm_composite = composite / renorm
-            norm_composite_err = norm_flux_err / renorm
+            norm_composite_err = combined_err / renorm
         else:
             norm_composite = composite
-            norm_composite_err = norm_flux_err
+            norm_composite_err = combined_err
 
         # Convert to inverse variance
         ivar = np.where(norm_composite_err > 0, 1.0 / (norm_composite_err ** 2), 0.0)

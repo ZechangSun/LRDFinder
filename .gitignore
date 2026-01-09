@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Virtual Environment
+venv/
+.venv/
+env/
+env.local/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Model Checkpoints
+*.ckpt
+*.pth
+*.pt
+models/
+checkpoints/
+
+# SwanLab
+swanlab_logs/
+swanlab_data/
+
+# Data (large files)
+data/*.fits
+*.fits.gz
+
+# Outputs
+outputs/
+results/
+
+# Configuration
+*.cfg
+*.ini
+*.yaml
+*.yml
+
+# Testing
+.pytest_cache/
+.tox/
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Environment variables
+.env
+.env.local
+.env.*.local

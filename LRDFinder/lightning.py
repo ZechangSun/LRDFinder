@@ -1,30 +1,10 @@
-import os
-import numpy as np
-from typing import Optional, Tuple, TypeAlias, List
-from datetime import datetime
-
-
-
 import torch
-from torch import nn
-from torch.utils.data import Dataset, DataLoader, Subset, WeightedRandomSampler
-import torch.nn.functional as F
-
-
-import pytorch_lightning as pl
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
-from sklearn.metrics import f1_score, recall_score, precision_score, roc_auc_score
-from sklearn.model_selection import train_test_split
-
-from astropy.io import fits
-
-from .model import LowRankCNN, LowRankMLP, OHEMBCEWithLogitsLoss, BPRLoss
-from .dataset import LRDDataset
-
-
 import swanlab
-from swanlab.integration.pytorch_lightning import SwanLabLogger
+from torch import nn
+import pytorch_lightning as pl
+from sklearn.metrics import f1_score, recall_score, precision_score, roc_auc_score
+from .model import LowRankCNN, LowRankMLP, OHEMBCEWithLogitsLoss, BPRLoss
+
 
 
 
@@ -41,7 +21,7 @@ class LRDFinder(pl.LightningModule):
                  rank=16,
                  dropout_rate=0.2,
                  task='classification'):
-        super(LRDClassifier, self).__init__()
+        super(LRDFinder, self).__init__()
         self.save_hyperparameters()
         self._initialize_model()
         self._initialize_loss()
@@ -73,10 +53,12 @@ class LRDFinder(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         y = batch['label'].float()
         y_hat = self(batch).squeeze()
+        loss = self.loss_fn(y_hat, y)
 
         self.validation_step_outputs.append({
             'preds': y_hat.detach(),
             'targets': y.detach(),
+            'loss': loss.detach()
         })
 
         return loss
@@ -121,7 +103,7 @@ class LRDFinder(pl.LightningModule):
                 dropout_rate=self.hparams.dropout_rate,
                 activation='relu'
             )
-        elif self.model_type == 'lowrank_mlp':
+        elif self.hparams.model_type == 'lowrank_mlp':
             self.model = LowRankMLP(
                 input_dim=self.hparams.npixels,
                 hidden_dims=self.hparams.hidden_dims if self.hparams.hidden_dims is not None else [256, 128, 64],
@@ -169,11 +151,37 @@ class LRDFinder(pl.LightningModule):
         pos_scores = self(pos_batch).squeeze()
         neg_scores = self(neg_batch).squeeze()
         
-        loss = self.loss_fn(pos_score, neg_score)
-        if stage == 'train':
-            swanlab.log({
-                "train_loss": loss.item(),
-                "step": self.global_step
-            })
-            self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
+        loss = self.loss_fn(pos_scores, neg_scores)
+        swanlab.log({
+            "train_loss": loss.item(),
+            "step": self.global_step
+        })
+        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
         return loss
+    
+    def on_train_epoch_end(self):
+        if self.training_step_outputs and self.hparams.task == 'classification':
+            all_preds = torch.cat([x['preds'] for x in self.training_step_outputs])
+            all_targets = torch.cat([x['targets'] for x in self.training_step_outputs])
+            
+            preds_np = all_preds.cpu().numpy()
+            targets_np = all_targets.cpu().numpy()
+            preds_binary = (preds_np > 0.5).astype(int)
+
+            try:
+                f1 = f1_score(targets_np, preds_binary, zero_division=0)
+                recall = recall_score(targets_np, preds_binary, zero_division=0)
+                precision = precision_score(targets_np, preds_binary, zero_division=0)
+                auc = roc_auc_score(targets_np, preds_np) if len(np.unique(targets_np)) > 1 else 0.0
+            except:
+                f1 = recall = precision = auc = 0.0
+            
+            swanlab.log({
+                "train_f1": f1,
+                "train_recall": recall,
+                "train_precision": precision,
+                "train_auc": auc,
+                "epoch": self.current_epoch
+            })
+            
+        self.training_step_outputs.clear()
