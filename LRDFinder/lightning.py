@@ -41,7 +41,7 @@ class LRDFinder(pl.LightningModule):
                  rank=16,
                  dropout_rate=0.2,
                  task='classification'):
-        super(LRDClassifier, self).__init__()
+        super(LRDFinder, self).__init__()
         self.save_hyperparameters()
         self._initialize_model()
         self._initialize_loss()
@@ -79,7 +79,6 @@ class LRDFinder(pl.LightningModule):
             'targets': y.detach(),
         })
 
-        return loss
     
     def on_validation_epoch_end(self):
         if self.validation_step_outputs:
@@ -155,7 +154,7 @@ class LRDFinder(pl.LightningModule):
             self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
         return loss
     
-    def _rank_training_step(self, batch, batch_idx):
+    def _rank_training_step(self, batch, batch_idx, stage='train'):
         pos_batch = {
             'spec': batch['pos_spec'],
             'error': batch['pos_error'],
@@ -169,7 +168,7 @@ class LRDFinder(pl.LightningModule):
         pos_scores = self(pos_batch).squeeze()
         neg_scores = self(neg_batch).squeeze()
         
-        loss = self.loss_fn(pos_score, neg_score)
+        loss = self.loss_fn(pos_scores, neg_scores)
         if stage == 'train':
             swanlab.log({
                 "train_loss": loss.item(),
@@ -177,3 +176,5 @@ class LRDFinder(pl.LightningModule):
             })
             self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True, logger=False)
         return loss
+
+

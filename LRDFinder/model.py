@@ -398,7 +398,7 @@ class MultiHeadAttentionWithRoPE(nn.Module):
                 float('-inf')
             )
         
-        attn_output = torch.matmul(attn_probs, v)
+        attn_output = torch.matmul(attn_scores, v)
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(
             batch_size, seq_len, self.embed_dim
@@ -430,8 +430,4 @@ class TransformerEncoderLayer(nn.Module):
     
     def forward(self, src: torch.Tensor, src_mask: Optional[torch.Tensor] = None):
         pass
-
-
-
-
 
